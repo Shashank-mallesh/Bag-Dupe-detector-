@@ -1,15 +1,16 @@
 import streamlit as st
 import cv2
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.applications.resnet50 import preprocess_input
+import torch
+import torchvision.models as models
+import torchvision.transforms as transforms
 from PIL import Image
 import plotly.graph_objects as go
 import plotly.express as px
 from sklearn.metrics.pairwise import cosine_similarity
 import time
-import io
+import requests
+from io import BytesIO
 
 # Page configuration
 st.set_page_config(
@@ -62,50 +63,50 @@ st.markdown("""
 
 class BagAuthenticator:
     def __init__(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = self.load_model()
+        self.transform = self.get_transform()
         
     def load_model(self):
         """Load pre-trained ResNet50 model for feature extraction"""
         try:
-            model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+            model = models.resnet50(pretrained=True)
+            model = torch.nn.Sequential(*list(model.children())[:-1])  # Remove final classification layer
+            model.eval()
+            model.to(self.device)
             return model
         except Exception as e:
             st.error(f"Error loading model: {str(e)}")
             return None
     
+    def get_transform(self):
+        """Get image transformation for ResNet50"""
+        return transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+    
     def preprocess_image(self, image):
         """Preprocess image for feature extraction"""
         try:
-            # Convert to numpy array if it's a PIL Image
-            if isinstance(image, Image.Image):
-                image = np.array(image)
+            # Convert to PIL if it's numpy array
+            if isinstance(image, np.ndarray):
+                image = Image.fromarray(image)
             
-            # Convert RGBA to RGB if necessary
-            if image.shape[-1] == 4:
-                image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
-            elif len(image.shape) == 2:  # Grayscale
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            elif image.shape[-1] == 3:
-                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            # Resize to ResNet50 input size
-            img = cv2.resize(image, (224, 224))
-            
-            # Preprocess for ResNet50
-            img = preprocess_input(img)
-            return img
+            # Apply transformations
+            image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+            return image_tensor
         except Exception as e:
             st.error(f"Error preprocessing image: {str(e)}")
             return None
     
-    def extract_features(self, image_array):
+    def extract_features(self, image_tensor):
         """Extract features using pre-trained model"""
         try:
-            # Expand dimensions to create batch of 1
-            image_batch = np.expand_dims(image_array, axis=0)
-            
-            # Extract features
-            features = self.model.predict(image_batch, verbose=0)
+            with torch.no_grad():
+                features = self.model(image_tensor)
+                features = features.squeeze().cpu().numpy()
             return features.flatten()
         except Exception as e:
             st.error(f"Error extracting features: {str(e)}")
